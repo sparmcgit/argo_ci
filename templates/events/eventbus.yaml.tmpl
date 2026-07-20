@@ -1,0 +1,12 @@
+# Namespace-wide singleton - one EventBus named 'default' is required
+# before any EventSource or Sensor in the events namespace will start.
+# Apply this ONCE per events namespace; every project scaffolded into the
+# same namespace shares it (re-applying is a harmless no-op).
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: default
+  namespace: __ARGOCI_EVENTS_NAMESPACE__
+spec:
+  nats:
+    native: {}

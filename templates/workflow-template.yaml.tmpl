@@ -1,0 +1,108 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-ci
+  namespace: __ARGOCI_NAMESPACE__
+spec:
+  entrypoint: ci
+  # Always runs after 'ci', success or failure, so the result gets reported
+  # to Gitea even when the build/test step itself fails.
+  onExit: report-status
+  # Without these, completed/failed Workflow pods accumulate forever (Argo
+  # doesn't GC them by default) - `kubectl get pods -n <namespace>` fills up
+  # with 0/2 Error pods from every past run. Successful runs' pods are
+  # deleted after a short grace period (long enough to still `argo logs`
+  # a run right after it finishes - without deleteDelayDuration, podGC
+  # deletes the pod the instant the workflow succeeds, so `argo logs
+  # @latest` can come up empty moments later since there's no pod left to
+  # stream from); the Workflow object itself (and cascade-deleted pods)
+  # sticks around much longer on failure so there's time to debug a red
+  # run before it's cleaned up.
+  podGC:
+    strategy: OnWorkflowSuccess
+    deleteDelayDuration: 15m
+  ttlStrategy:
+    secondsAfterSuccess: 86400 # 1 day
+    secondsAfterFailure: 259200 # 3 days
+  arguments:
+    parameters:
+      - name: revision
+        value: __ARGOCI_GIT_BRANCH__
+      # Populated by the Sensor from the webhook payload (body.after). Left
+      # empty for manual `argo submit` runs, in which case report-status
+      # skips reporting rather than erroring on a missing SHA.
+      - name: commit-sha
+        value: ""
+  templates:
+    - name: ci
+      inputs:
+        parameters:
+          - name: revision
+      container:
+        image: __ARGOCI_GO_IMAGE__
+        workingDir: /work
+        env:
+          - name: GITEA_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gitea-credentials
+                key: token
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            apk add --no-cache git
+            git clone --branch "$1" --depth 1 \
+              "http://oauth2:${GITEA_TOKEN}@__ARGOCI_GITEA_HOST__/__ARGOCI_GITEA_OWNER__/__ARGOCI_GITEA_REPO__.git" /work
+            go build ./...
+            go vet ./...
+            go test ./... -cover
+            __ARGOCI_TAGGED_TEST_CMD__
+
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+            "$(go env GOPATH)/bin/golangci-lint" run __ARGOCI_LINT_BUILD_TAGS_FLAG__./...
+
+            total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+            threshold=__ARGOCI_COVERAGE_THRESHOLD__
+            below=$(awk -v t="$total" -v th="$threshold" 'BEGIN { print (t < th) }')
+            if [ "$below" = "1" ]; then
+              echo "Coverage ${total}% is below the ${threshold}% threshold"
+              exit 1
+            fi
+            echo "Coverage ${total}% meets the ${threshold}% threshold"
+          - --
+          - "{{inputs.parameters.revision}}"
+
+    - name: report-status
+      container:
+        image: alpine:3.20
+        env:
+          - name: GITEA_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gitea-credentials
+                key: token
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            sha="$1"
+            wf_status="$2"
+            if [ -z "$sha" ]; then
+              echo "No commit SHA (manual run) - skipping Gitea status report."
+              exit 0
+            fi
+            apk add --no-cache curl
+            case "$wf_status" in
+              Succeeded) state="success" ;;
+              Failed|Error) state="failure" ;;
+              *) state="error" ;;
+            esac
+            curl -sf -X POST \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"state\":\"${state}\",\"context\":\"__ARGOCI_COMMIT_STATUS_CONTEXT__\",\"description\":\"Argo Workflows CI\"}" \
+              "http://__ARGOCI_GITEA_HOST__/api/v1/repos/__ARGOCI_GITEA_OWNER__/__ARGOCI_GITEA_REPO__/statuses/${sha}"
+          - --
+          - "{{workflow.parameters.commit-sha}}"
+          - "{{workflow.status}}"

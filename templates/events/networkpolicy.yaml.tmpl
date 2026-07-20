@@ -1,0 +1,25 @@
+# Restricts this project's gitea EventSource webhook endpoint to Gitea's
+# own IP. Argo Events' generic webhook EventSource type has no built-in
+# signature verification, so without this, anything that can reach the
+# NodePort can trigger a CI run. Confirm your cluster's CNI actually
+# enforces NetworkPolicy before relying on this as a real control (plain
+# Flannel, for instance, silently no-ops on NetworkPolicy resources;
+# kube-router enforces it via iptables).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-gitea-eventsource-restrict
+  namespace: __ARGOCI_EVENTS_NAMESPACE__
+spec:
+  podSelector:
+    matchLabels:
+      eventsource-name: __ARGOCI_PROJECT_NAME__-gitea
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: __ARGOCI_GITEA_IP__/32
+      ports:
+        - protocol: TCP
+          port: 12000

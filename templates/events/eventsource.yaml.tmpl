@@ -1,0 +1,21 @@
+# Gitea isn't one of Argo Events' built-in provider types (github, gitlab,
+# bitbucketserver, ...), so this uses the generic 'webhook' type, which just
+# captures the raw HTTP request. It does not itself verify Gitea's
+# X-Gitea-Signature HMAC header - see TROUBLESHOOTING.md for how access to
+# this endpoint is restricted instead.
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-gitea
+  namespace: __ARGOCI_EVENTS_NAMESPACE__
+spec:
+  eventBusName: default
+  service:
+    ports:
+      - port: 12000
+        targetPort: 12000
+  webhook:
+    push:
+      port: "12000"
+      endpoint: /push
+      method: POST

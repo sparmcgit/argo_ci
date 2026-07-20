@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-ci
+  namespace: __ARGOCI_EVENTS_NAMESPACE__
+spec:
+  eventBusName: default
+  template:
+    serviceAccountName: __ARGOCI_PROJECT_NAME__-ci-sensor-sa
+  dependencies:
+    - name: gitea-push-dep
+      eventSourceName: __ARGOCI_PROJECT_NAME__-gitea
+      eventName: push
+      filters:
+        data:
+          - path: body.ref
+            type: string
+            comparator: "="
+            value:
+              - "refs/heads/__ARGOCI_GIT_BRANCH__"
+  triggers:
+    - template:
+        name: submit-ci-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: __ARGOCI_PROJECT_NAME__-ci-
+                namespace: __ARGOCI_NAMESPACE__
+              spec:
+                workflowTemplateRef:
+                  name: __ARGOCI_PROJECT_NAME__-ci
+                arguments:
+                  parameters:
+                    - name: revision
+                      value: __ARGOCI_GIT_BRANCH__
+                    # Patched below from the webhook payload's body.after -
+                    # the head commit SHA of the push. Used by the
+                    # WorkflowTemplate's report-status exit handler to know
+                    # which commit to report the result against.
+                    - name: commit-sha
+                      value: ""
+          # Must live inside argoWorkflow (sibling of operation/source), not
+          # as a sibling of argoWorkflow itself - a trigger-level parameters
+          # block addresses paths relative to the trigger template (e.g.
+          # `name`, `k8s.source...`), not the constructed resource, so
+          # `dest: spec.arguments.parameters.1.value` at that level matches
+          # nothing and silently no-ops instead of patching commit-sha.
+          # See TROUBLESHOOTING.md.
+          parameters:
+            - src:
+                dependencyName: gitea-push-dep
+                dataKey: body.after
+              dest: spec.arguments.parameters.1.value

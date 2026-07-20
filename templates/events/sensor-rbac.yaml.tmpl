@@ -1,0 +1,45 @@
+# The Sensor's argoWorkflow trigger creates a Workflow resource in the
+# workflow namespace, but the Sensor pod itself runs in the events
+# namespace. Its ServiceAccount needs an explicit cross-namespace
+# RoleBinding to be allowed to do that - this is the Argo Events equivalent
+# of the workflowtaskresults RBAC gap rbac.yaml fixes for Argo Workflows
+# itself. It also needs get/list/watch on workflowtemplates.argoproj.io,
+# not just create on workflows.argoproj.io - see TROUBLESHOOTING.md.
+#
+# This manifest spans two namespaces via each resource's own
+# metadata.namespace - apply it WITHOUT `-n <namespace>`, or kubectl
+# rejects it as a mismatch.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-ci-sensor-sa
+  namespace: __ARGOCI_EVENTS_NAMESPACE__
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-ci-sensor-role
+  namespace: __ARGOCI_NAMESPACE__
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create", "get", "list", "watch"]
+  # Submitting via workflowTemplateRef requires reading the WorkflowTemplate
+  # itself, not just creating the resulting Workflow.
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtemplates"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: __ARGOCI_PROJECT_NAME__-ci-sensor-rolebinding
+  namespace: __ARGOCI_NAMESPACE__
+subjects:
+  - kind: ServiceAccount
+    name: __ARGOCI_PROJECT_NAME__-ci-sensor-sa
+    namespace: __ARGOCI_EVENTS_NAMESPACE__
+roleRef:
+  kind: Role
+  name: __ARGOCI_PROJECT_NAME__-ci-sensor-role
+  apiGroup: rbac.authorization.k8s.io
